@@ -143,29 +143,22 @@ pub fn reject_empty_string(s: &String) -> Result<(), Error> {
 // # Gas
 //
 // Copies the raw bytes of `s` into a stack-allocated 256-byte buffer for
-// inspection — one allocation per call, O(n) in string length. Strings longer
-// than 256 bytes are checked in 256-byte chunks.
+// inspection — one allocation per call. Metadata strings are capped at 256
+// bytes, so the buffer covers the full accepted range.
 pub fn reject_null_bytes(s: &String) -> Result<(), Error> {
     let len = s.len();
     if len == 0 {
         return Ok(());
     }
+    if len > 256 {
+        return Err(Error::InvalidInput);
+    }
 
-    // Check the bytes in chunks that fit our stack buffer.
-    //
-    // IMPORTANT: `String::copy_into_slice` panics if the slice length does not
-    // equal `s.len()` exactly, so each chunk must be exactly the size we copy.
-    let mut offset: u32 = 0;
-    while offset < len {
-        let remaining = len - offset;
-        let chunk_len = if remaining > 256 { 256 } else { remaining };
-        let mut buf = [0u8; 256];
-        let slice = &mut buf[..chunk_len as usize];
-        s.copy_into_slice(slice);
-        if slice.iter().any(|b| *b == 0x00) {
-            return Err(Error::InvalidInput);
-        }
-        offset += chunk_len;
+    let mut buf = [0u8; 256];
+    let slice = &mut buf[..len as usize];
+    s.copy_into_slice(slice);
+    if slice.iter().any(|b| *b == 0x00) {
+        return Err(Error::InvalidInput);
     }
 
     Ok(())

@@ -891,7 +891,7 @@ fn cross_domain_nonce_does_not_collide() {
     use crate::nonce::{DOMAIN_ADMIN_ROTATION, DOMAIN_BATCH_CHARGE, DOMAIN_METADATA_SIGNED};
     assert_eq!(DOMAIN_BATCH_CHARGE.as_u32(), 0);
     assert_eq!(DOMAIN_ADMIN_ROTATION.as_u32(), 1);
-    assert_eq!(DOMAIN_METADATA_SIGNED.as_u32(), 3);
+    assert_eq!(DOMAIN_METADATA_SIGNED.as_u32(), 11);
 }
 
 #[test]

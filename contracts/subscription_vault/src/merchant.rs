@@ -1360,6 +1360,7 @@ pub fn do_set_payout_schedule(
     min_payout: i128,
 ) -> Result<PayoutSchedule, Error> {
     merchant.require_auth();
+    require_merchant_approved(env, &merchant)?;
 
     if min_payout < 0 {
         return Err(Error::InvalidAmount);
@@ -2118,6 +2119,7 @@ pub fn register_sub_account(
     label: Symbol,
 ) -> Result<(), Error> {
     merchant.require_auth();
+    require_merchant_approved(env, &merchant)?;
 
     // Reject empty labels
     // `Symbol` values are non-empty by construction (Soroban rejects empty

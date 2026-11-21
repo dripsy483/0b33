@@ -188,6 +188,10 @@ pub(crate) fn extend_subscription_ttl(env: &Env, key: &DataKey) {
     maybe_extend_ttl(env, key, SUB_TTL_THRESHOLD, SUB_TTL_EXTEND_TO);
 }
 
+pub(crate) fn cancellation_escrow_window_secs(env: &Env) -> u64 {
+    CANCELLATION_ESCROW_WINDOW_SECS.max(crate::admin::get_dispute_window_secs(env))
+}
+
 /// Reads a `Subscription` from persistent storage without panicking on
 /// deserialization failure (for example, after an incomplete schema migration).
 ///
@@ -198,8 +202,8 @@ pub(crate) fn extend_subscription_ttl(env: &Env, key: &DataKey) {
 pub(crate) fn try_get_subscription(env: &Env, subscription_id: u32) -> Result<Subscription, Error> {
     let key = DataKey::Sub(subscription_id);
     let raw: Val = env.storage().persistent().get(&key).ok_or(Error::NotFound)?;
-    let sub = Subscription::try_from_val(env, &raw).map_err(|_| Error::NotFound)?;
     extend_subscription_ttl(env, &key);
+    let sub = Subscription::try_from_val(env, &raw).map_err(|_| Error::NotFound)?;
     Ok(sub)
 }
 
@@ -300,6 +304,14 @@ fn enforce_plan_concurrency_limit(
     subscriber: &Address,
     plan_template_id: u32,
 ) -> Result<(), Error> {
+    // Ledger-level concurrency note: this check counts currently active
+    // subscriptions from ledger state. Stellar does not serialize unrelated
+    // transactions in the same ledger, so a narrowly simultaneous pair of
+    // creates can observe the same pre-create count. This implementation
+    // currently accepts that read/check race as its trade-off; a future
+    // reservation mechanism would need an atomic, shared plan slot counter
+    // that is incremented before creation and released on cancellation,
+    // failure, or subscription migration.
     let max_active = get_plan_max_active(env, plan_template_id);
     // Zero means "no limit" for this plan.
     if max_active == 0 {
@@ -1116,6 +1128,7 @@ pub fn do_grace_buyout(
             previous_status: SubscriptionStatus::GracePeriod,
             timestamp: now,
             schema_version: crate::types::EVENT_SCHEMA_VERSION,
+            contract_id: env.current_contract_address(),
         },
     );
 
@@ -1254,7 +1267,7 @@ fn apply_cancellation(
     if refund_amount > 0 {
         let now = env.ledger().timestamp();
         let released_at = now
-            .checked_add(CANCELLATION_ESCROW_WINDOW_SECS)
+            .checked_add(cancellation_escrow_window_secs(env))
             .ok_or(Error::Overflow)?;
 
         let escrow = CancellationEscrow {
@@ -1813,8 +1826,72 @@ pub fn do_resume_subscription(
             previous_status,
             timestamp: env.ledger().timestamp(),
             schema_version: crate::types::EVENT_SCHEMA_VERSION,
+            contract_id: env.current_contract_address(),
         },
     );
+
+    Ok(())
+}
+
+/// Reactivate an `Expired` subscription back to `Active` (admin only).
+///
+/// Expiration is otherwise a near-terminal state — only withdraw, cleanup,
+/// and read-only queries are permitted on an `Expired` subscription. This
+/// entrypoint lets the contract admin revive a subscription that has lapsed
+/// (for example, one that expired via a stale `expires_at` /
+/// `expires_at_ledger` bound rather than an intentional end of service).
+///
+/// On the `Expired -> Active` transition the wall-clock expiration is
+/// extended to at least one billing interval in the future and the
+/// ledger-sequence bound is cleared, so the reactivation grants a full
+/// service period instead of re-expiring on the next charge cycle.
+///
+/// # Authorization
+/// Only the contract admin may reactivate; the subscriber and merchant cannot.
+///
+/// # Errors
+/// * [`Error::Forbidden`] — `admin` is not the stored contract admin.
+/// * [`Error::InvalidStatusTransition`] — subscription is not `Expired`. An
+///   already-`Active` subscription is an idempotent no-op (returns `Ok`).
+pub fn do_reactivate_subscription(
+    env: &Env,
+    admin: Address,
+    subscription_id: u32,
+) -> Result<(), Error> {
+    crate::admin::require_admin_auth(env, &admin)?;
+
+    let mut sub = get_subscription(env, subscription_id)?;
+
+    // Idempotent: an already-active subscription needs no reactivation.
+    if sub.status == SubscriptionStatus::Active {
+        return Ok(());
+    }
+    // Only an Expired subscription can be reactivated to Active.
+    if sub.status != SubscriptionStatus::Expired {
+        return Err(Error::InvalidStatusTransition);
+    }
+
+    let now = env.ledger().timestamp();
+
+    // Acceptance criterion: on Expired -> Active, clear or extend the
+    // expiration timestamp to at least the billing interval in the future so
+    // the reactivation grants a full service period instead of re-expiring
+    // immediately on the next charge cycle.
+    let min_expires_at = now.saturating_add(sub.interval_seconds);
+    let needs_extend = match sub.expires_at {
+        None => true,
+        Some(exp) => exp < min_expires_at,
+    };
+    if needs_extend {
+        sub.expires_at = Some(min_expires_at);
+    }
+    // Clear the stale ledger-sequence bound: a reactivation must not be
+    // constrained by a block-height bound that already fired.
+    sub.expires_at_ledger = None;
+    sub.grace_start_timestamp = None;
+
+    transition_to(&mut sub.status, SubscriptionStatus::Active)?;
+    write_subscription(env, subscription_id, &sub);
 
     Ok(())
 }
@@ -1850,6 +1927,7 @@ pub(crate) fn resume_after_blocklist_removal(
             previous_status,
             timestamp: env.ledger().timestamp(),
             schema_version: crate::types::EVENT_SCHEMA_VERSION,
+            contract_id: env.current_contract_address(),
         },
     );
     Ok(())
@@ -3140,6 +3218,7 @@ pub fn do_deposit_funds_on_behalf(
                 previous_status: SubscriptionStatus::Paused,
                 timestamp: now,
                 schema_version: crate::types::EVENT_SCHEMA_VERSION,
+                contract_id: env.current_contract_address(),
             },
         );
     }

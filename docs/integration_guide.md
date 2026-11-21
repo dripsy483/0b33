@@ -67,7 +67,7 @@ Key design properties:
 | **Admin** | Singleton address set at `init`. Rotatable via `rotate_admin`. | `init`, `set_min_topup`, `rotate_admin`, `recover_stranded_funds`, `batch_charge`, `charge_subscription`, `charge_usage`, `charge_usage_with_reference`, `charge_one_off`, `enable_emergency_stop`, `disable_emergency_stop`, `export_contract_snapshot`, `export_subscription_summary`, `export_subscription_summaries`, `add_accepted_token`, `remove_accepted_token`, `set_billing_retention`, `partial_refund`, `set_oracle_config`, `set_subscriber_credit_limit`, `add_to_blocklist` (global), `remove_from_blocklist` |
 | **Subscriber** | Owner of a subscription; identified by their Stellar address. Must sign. | `create_subscription`, `create_subscription_with_token`, `create_subscription_from_plan`, `deposit_funds`, `pause_subscription`, `resume_subscription`, `cancel_subscription`, `withdraw_subscriber_funds`, `migrate_subscription_to_plan` |
 | **Merchant** | Recipient of subscription charges. Must sign for merchant actions. | `create_plan_template`, `create_plan_template_with_token`, `update_plan_template`, `set_plan_max_active_subs`, `pause_subscription` (own), `resume_subscription` (own), `cancel_subscription` (own), `withdraw_merchant_funds`, `withdraw_merchant_token_funds`, `merchant_refund`, `pause_merchant`, `unpause_merchant`, `configure_usage_limits`, `add_to_blocklist` (scoped to own subscribers) |
-| **Anyone** | No auth required. | `get_subscription`, `get_subscription_count`, `get_merchant_balance`, `get_merchant_balance_by_token`, `get_merchant_balance_aggregated`, `get_merchant_token_earnings_with_sub_accounts`, `get_merchant_total_earnings_with_sub_accounts`, `get_plan_template`, `get_plan_max_active_subs`, `get_next_charge_info`, `estimate_topup_for_intervals`, `get_subscriptions_by_merchant`, `get_subscriptions_by_token`, `list_subscriptions_by_token`, `list_subscriptions_by_subscriber`, `get_cap_info`, `get_sub_statements_offset`, `get_sub_statements_cursor`, `get_admin`, `get_min_topup`, `get_emergency_stop_status`, `list_accepted_tokens`, `is_blocklisted`, `get_blocklist_entry`, `get_subscriber_credit_limit`, `get_subscriber_exposure`, `get_merchant_subscription_count`, `get_merchant_total_earnings`, `get_reconciliation_snapshot` |
+| **Anyone** | No auth required. | `get_subscription`, `get_subscription_count`, `get_merchant_balance`, `get_merchant_balance_by_token`, `get_merchant_balance_aggregated`, `get_merchant_token_earnings_with_sub_accounts`, `get_merchant_total_earnings_with_sub_accounts`, `get_plan_template`, `get_plan_max_active_subs`, `get_next_charge_info`, `estimate_topup_for_intervals`, `get_subscriptions_by_merchant`, `get_subscriptions_by_token`, `list_subscriptions_by_token`, `list_subscriptions_by_subscriber`, `get_cap_info`, `get_sub_statements_offset`, `get_sub_statements_cursor`, `get_billing_statements_by_merchant`, `get_admin`, `get_min_topup`, `get_emergency_stop_status`, `list_accepted_tokens`, `is_blocklisted`, `get_blocklist_entry`, `get_subscriber_credit_limit`, `get_subscriber_exposure`, `get_merchant_subscription_count`, `get_merchant_total_earnings`, `get_reconciliation_snapshot` |
 
 > **Note on `pause_subscription` / `resume_subscription` / `cancel_subscription`:**
 > These accept an `authorizer: Address` parameter. The caller must be either the
@@ -132,6 +132,15 @@ withdrawals, pause/resume/cancel, and export calls are **not** blocked.
 | `set_plan_max_active_subs` | `(merchant, plan_template_id, max_active) -> ()` | Merchant | `0` means no limit. Checked at `create_subscription_from_plan`. |
 | `get_plan_max_active_subs` | `(plan_template_id) -> u32` | None | |
 
+#### Plan concurrency limitation
+
+`plan_max_active` is enforced by counting active subscriptions at create time.
+Separate transactions in the same ledger can observe the same pre-create state;
+therefore this check is an accepted ledger-level trade-off and is not a
+reservation mechanism. A future implementation that requires strict no-overflow
+guarantees must add an atomic shared slot counter that reserves capacity before
+creation and releases it on cancellation or migration.
+
 ### Charging (Admin / Billing Engine)
 
 | Entrypoint | Signature | Auth | Notes |
@@ -182,6 +191,7 @@ result independently of vector position. When `success` is `false`,
 | `get_cap_info` | `(subscription_id) -> CapInfo` | None | Lifetime cap summary: cap value, amount charged, remaining, reached flag. |
 | `get_sub_statements_offset` | `(subscription_id, offset, limit, newest_first) -> BillingStatementsPage` | None | Offset pagination for billing statements. `newest_first = true` recommended for infinite scroll. |
 | `get_sub_statements_cursor` | `(subscription_id, cursor, limit, newest_first) -> BillingStatementsPage` | None | Cursor pagination; pass `cursor = None` for first page. |
+| `get_billing_statements_by_merchant` | `(merchant, offset, limit) -> BillingStatementsPage` | None | Offset pagination for merchant billing statements. `limit` must be in `1..=500`. |
 | `get_subscriber_credit_limit` | `(subscriber, token) -> i128` | None | `0` means no limit. |
 | `get_subscriber_exposure` | `(subscriber, token) -> i128` | None | Sum of prepaid balances + next-interval amounts for active subscriptions. |
 

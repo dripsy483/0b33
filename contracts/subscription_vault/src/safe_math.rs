@@ -186,5 +186,6 @@ mod tests {
         assert_eq!(safe_sub_balance(0, -1), Err(Error::Underflow));
         assert_eq!(safe_sub_balance(5, 10), Err(Error::Underflow));
         assert_eq!(safe_sub_balance(10, 5), Ok(5));
+        assert_eq!(safe_sub_balance(10, 10), Ok(0));
     }
 }

@@ -143,7 +143,7 @@ pub fn create_coupon(
     merchant.require_auth();
 
     if percent_off_bps > 10_000 {
-        return Err(Error::InvalidInput);
+        return Err(Error::CouponDiscountTooHigh);
     }
     if fixed_off <= 0 {
         return Err(Error::InvalidAmount);

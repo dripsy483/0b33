@@ -127,6 +127,8 @@ pub mod statements {
     };
     use soroban_sdk::{Address, Env, Symbol, Vec};
 
+    pub const MAX_BILLING_STATEMENTS_PAGE: u32 = 500;
+
     /// Appends a new, immutable statement to the subscription's ledger under a
     /// fresh, monotonically-increasing sequence number.
     pub fn append_statement(
@@ -151,7 +153,7 @@ pub mod statements {
             period_start,
             period_end: timestamp,
             amount,
-            merchant,
+            merchant: merchant.clone(),
             token,
             kind,
         };
@@ -172,6 +174,22 @@ pub mod statements {
         // of statements while the immutable records still exist.
         env.storage().persistent().extend_ttl(
             &idx_key,
+            crate::types::BILLING_STATEMENT_TTL_THRESHOLD,
+            crate::types::BILLING_STATEMENT_TTL_EXTEND_TO,
+        );
+
+        let merchant_idx_key = DataKey::BillingStatementsByMerchant(merchant);
+        let mut merchant_ids: Vec<(u32, u32)> = env
+            .storage()
+            .persistent()
+            .get(&merchant_idx_key)
+            .unwrap_or(Vec::new(env));
+        merchant_ids.push_back((subscription_id, next_seq));
+        env.storage()
+            .persistent()
+            .set(&merchant_idx_key, &merchant_ids);
+        env.storage().persistent().extend_ttl(
+            &merchant_idx_key,
             crate::types::BILLING_STATEMENT_TTL_THRESHOLD,
             crate::types::BILLING_STATEMENT_TTL_EXTEND_TO,
         );
@@ -2589,6 +2607,55 @@ impl SubscriptionVault {
         Ok(())
     }
 
+    /// Reactivate an `Expired` subscription back to `Active` (admin only).
+    ///
+    /// On the `Expired -> Active` transition the expiration timestamp is
+    /// extended to at least one billing interval in the future and the
+    /// ledger-sequence bound is cleared, so the reactivation grants a full
+    /// service period instead of re-expiring on the next charge cycle.
+    ///
+    /// # Arguments
+    ///
+    /// * `admin` — Must be the stored contract admin.
+    /// * `subscription_id` — Subscription to reactivate.
+    ///
+    /// # Errors
+    ///
+    /// * [`Error::Forbidden`] — `admin` is not the stored admin.
+    /// * [`Error::InvalidStatusTransition`] — subscription is not `Expired`
+    ///   (an already-`Active` subscription is an idempotent no-op).
+    ///
+    /// # Events
+    ///
+    /// Emits [`SubscriptionResumedEvent`] with `previous_status = Expired`.
+    pub fn reactivate_subscription(
+        env: Env,
+        admin: Address,
+        subscription_id: u32,
+    ) -> Result<(), Error> {
+        let old_sub = queries::get_subscription(&env, subscription_id)?;
+        subscription::do_reactivate_subscription(&env, admin.clone(), subscription_id)?;
+        // Only emit when a real reactivation occurred; an idempotent no-op
+        // (already Active) must not emit a spurious `sub_resumed` event.
+        if old_sub.status == SubscriptionStatus::Expired {
+            let sub = queries::get_subscription(&env, subscription_id)?;
+            env.events().publish(
+                (Symbol::new(&env, "sub_resumed"), subscription_id),
+                SubscriptionResumedEvent {
+                    subscription_id,
+                    subscriber: sub.subscriber,
+                    merchant: sub.merchant,
+                    authorizer: admin,
+                    previous_status: old_sub.status,
+                    timestamp: env.ledger().timestamp(),
+                    schema_version: crate::types::BASE_EVENT_SCHEMA_VERSION,
+                    contract_id: env.current_contract_address(),
+                },
+            );
+        }
+        Ok(())
+    }
+
     /// Archive an expired or cancelled subscription.
     pub fn cleanup_subscription(
         env: Env,
@@ -3169,11 +3236,12 @@ impl SubscriptionVault {
 
     // ── Cancellation Refund Escrow (#569) ─────────────────────────────────────
 
-    /// Claim a cancellation escrow refund after the 24-hour hold window elapses.
+    /// Claim a cancellation escrow refund after the hold window elapses.
     ///
     /// When a subscription is cancelled, the remaining prepaid balance is held
-    /// in escrow for [`CANCELLATION_ESCROW_WINDOW_SECS`] so the merchant has an
-    /// opportunity to dispute wrongful terminations. The subscriber calls this
+    /// in escrow for at least [`CANCELLATION_ESCROW_WINDOW_SECS`] (or the
+    /// configured dispute window, if longer) so the merchant has an opportunity
+    /// to dispute wrongful terminations. The subscriber calls this
     /// entrypoint after the window elapses to release the funds.
     ///
     /// # Auth
@@ -3386,6 +3454,45 @@ impl SubscriptionVault {
             limit,
             newest_first,
         )
+    }
+
+    /// Get a bounded page of billing statements for a merchant.
+    pub fn get_billing_statements_by_merchant(
+        env: Env,
+        merchant: Address,
+        offset: u32,
+        limit: u32,
+    ) -> Result<BillingStatementsPage, Error> {
+        if !(1..=statements::MAX_BILLING_STATEMENTS_PAGE).contains(&limit) {
+            return Err(Error::InvalidInput);
+        }
+
+        let idx_key = DataKey::BillingStatementsByMerchant(merchant);
+        let ids: Vec<(u32, u32)> = env
+            .storage()
+            .persistent()
+            .get(&idx_key)
+            .unwrap_or(Vec::new(env));
+        let total = ids.len();
+        let end = offset.saturating_add(limit).min(total);
+        let mut statements_page: Vec<BillingStatement> = Vec::new(&env);
+
+        let mut i = offset;
+        while i < end {
+            let (subscription_id, sequence) = ids.get(i).unwrap();
+            if let Some(statement) = env.storage().persistent().get::<_, BillingStatement>(
+                &DataKey::BillingStatement(subscription_id, sequence),
+            ) {
+                statements_page.push_back(statement);
+            }
+            i += 1;
+        }
+
+        Ok(BillingStatementsPage {
+            statements: statements_page,
+            next_cursor: if end < total { Some(end) } else { None },
+            total,
+        })
     }
 
     /// Get statements by cursor.

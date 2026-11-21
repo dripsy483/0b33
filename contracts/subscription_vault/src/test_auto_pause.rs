@@ -2,7 +2,7 @@
 //!
 //! Verifies that a subscription is automatically paused after N consecutive
 //! InsufficientBalance charge attempts, that the counter resets on a successful
-//! charge or a fresh deposit, and that the feature is inert when disabled (threshold=0).
+//! charge or a fresh deposit, and that the feature is inert at the default threshold (0).
 
 use crate::{SubscriptionStatus, SubscriptionVault, SubscriptionVaultClient};
 use soroban_sdk::{
@@ -72,6 +72,13 @@ fn jump_interval(env: &Env) {
 }
 
 // ── tests ─────────────────────────────────────────────────────────────────────
+
+#[test]
+fn test_auto_pause_threshold_zero_rejected() {
+    let (_env, client, admin, _tok) = setup_no_grace();
+    let result = client.try_set_auto_pause_threshold(&admin, &0u32);
+    assert_eq!(result, Err(Ok(crate::Error::InvalidInput)));
+}
 
 /// With threshold=0 (disabled), multiple failures never cause auto-pause.
 #[test]
@@ -244,8 +251,7 @@ fn test_already_paused_not_affected() {
 /// correct per-item result codes without rolling back the whole batch.
 #[test]
 fn test_batch_charge_mixed_status_partial_failure() {
-    let (env, client, admin, tok) = setup_no_grace();
-    client.set_auto_pause_threshold(&admin, &0u32);
+    let (env, client, _admin, tok) = setup_no_grace();
 
     // 1) Active, funded subscription — should charge successfully.
     let (active_id, _active_sub, _active_mer) = create_funded_sub(&env, &client, &tok, AMOUNT);

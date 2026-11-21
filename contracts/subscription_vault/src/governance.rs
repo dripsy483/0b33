@@ -13,8 +13,8 @@
 
 use crate::types::{
     DataKey, Error, Proposal, ProposalCancelledEvent, ProposalExecutedEvent, ProposalKind,
-    ProposalSubmittedEvent, ProposalVotedEvent, VoteLockedEvent, BASE_EVENT_SCHEMA_VERSION,
-    MAX_PROTOCOL_FEE_BIPS,
+    ProposalSubmittedEvent, ProposalVotedEvent, VoteLockedEvent, EVENT_SCHEMA_VERSION,
+    MAX_GUARDIAN_WEIGHT,
 };
 use soroban_sdk::{Address, Env, Map, String, Symbol, Vec};
 
@@ -64,8 +64,12 @@ fn ensure_proposal_not_invalidated(env: &Env, proposal_id: u64) -> Result<(), Er
 /// # Errors
 /// - `NotInitialized` if no admin is set.
 /// - `InvalidInput` if weight is zero.
+/// - `InvalidInput` if weight exceeds `MAX_GUARDIAN_WEIGHT` (10 000).
 pub fn add_guardian(env: &Env, guardian: Address, weight: u32) -> Result<(), Error> {
     if weight == 0 {
+        return Err(Error::InvalidInput);
+    }
+    if weight > MAX_GUARDIAN_WEIGHT {
         return Err(Error::InvalidInput);
     }
 

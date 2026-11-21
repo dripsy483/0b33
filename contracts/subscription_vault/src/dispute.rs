@@ -254,10 +254,8 @@ pub fn do_resolve_dispute(
     //       undrawn balance). The check is mathematically unreachable today
     //       but protects against regressions if partial-resolution logic is
     //       added later.
-    let new_total_disbursed = escrow_ledger
-        .total_disbursed
-        .checked_add(remaining)
-        .ok_or(Error::Overflow)?;
+    let new_total_disbursed =
+        crate::safe_math::safe_add(escrow_ledger.total_disbursed, remaining)?;
 
     if new_total_disbursed > escrow_ledger.original_amount {
         return Err(Error::DisputeOverpay);
@@ -287,7 +285,7 @@ pub fn do_resolve_dispute(
     if resolution == DisputeStatus::ResolvedToMerchant {
         // Return escrowed funds to merchant balance
         let current = merchant::get_merchant_balance_by_token(env, &dispute.merchant, token_addr);
-        let new_balance = current.checked_add(remaining).ok_or(Error::Overflow)?;
+        let new_balance = crate::safe_math::safe_add(current, remaining)?;
         merchant::set_merchant_balance(env, &dispute.merchant, token_addr, &new_balance);
     } else {
         // Transfer escrowed funds to subscriber

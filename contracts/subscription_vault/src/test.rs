@@ -379,20 +379,30 @@ fn manual_can_transition(from: &SubscriptionStatus, to: &SubscriptionStatus) -> 
         return true;
     }
 
-    match (from, to) {
-        (Active, Paused) => true,
-        (Active, Cancelled) => true,
-        (Active, InsufficientBalance) => true,
-        (Active, GracePeriod) => true,
-        (Paused, Active) => true,
-        (Paused, Cancelled) => true,
-        (InsufficientBalance, Active) => true,
-        (InsufficientBalance, Cancelled) => true,
-        (GracePeriod, Active) => true,
-        (GracePeriod, Cancelled) => true,
-        (GracePeriod, InsufficientBalance) => true,
-        _ => false,
-    }
+    // Mirror of `state_machine::can_transition`. Keep these arms in sync
+    // whenever the transition matrix changes.
+    matches!(
+        (from, to),
+        (Active, Paused)
+            | (Active, Cancelled)
+            | (Active, InsufficientBalance)
+            | (Active, GracePeriod)
+            | (Active, Expired)
+            | (Paused, Active)
+            | (Paused, Cancelled)
+            | (Paused, Expired)
+            | (InsufficientBalance, Active)
+            | (InsufficientBalance, Cancelled)
+            | (InsufficientBalance, Expired)
+            | (InsufficientBalance, Paused)
+            | (GracePeriod, Active)
+            | (GracePeriod, Cancelled)
+            | (GracePeriod, InsufficientBalance)
+            | (GracePeriod, Expired)
+            | (Cancelled, Archived)
+            | (Expired, Active)
+            | (Expired, Archived)
+    )
 }
 
 fn random_transition_action(seed: &mut u64) -> u32 {
@@ -854,6 +864,160 @@ fn test_resume_subscription_from_cancelled_should_fail() {
         fixtures::create_subscription(&test_env.env, &test_env.client, SubscriptionStatus::Active);
     test_env.client.cancel_subscription(&id, &subscriber);
     test_env.client.resume_subscription(&id, &subscriber);
+}
+
+// ── Admin reactivation of an Expired subscription (Expired -> Active) ──────────
+//
+// `reactivate_subscription` is the only path that performs an Expired -> Active
+// transition. On that transition the expiration bounds are reset so the
+// reactivation grants a full service period instead of re-expiring on the
+// next charge cycle (see acceptance criteria).
+
+/// Force a subscription into the Expired state with the given expiration
+/// bounds, bypassing the state machine for test setup.
+fn force_expired(
+    env: &Env,
+    client: &SubscriptionVaultClient,
+    id: u32,
+    expires_at: Option<u64>,
+    expires_at_ledger: Option<u32>,
+) {
+    let mut sub = client.get_subscription(&id);
+    sub.status = SubscriptionStatus::Expired;
+    sub.expires_at = expires_at;
+    sub.expires_at_ledger = expires_at_ledger;
+    sub.grace_start_timestamp = None;
+    env.as_contract(&client.address, || {
+        env.storage().persistent().set(&DataKey::Sub(id), &sub);
+    });
+}
+
+#[test]
+fn test_reactivate_expired_extends_expiration_to_one_interval() {
+    let test_env = TestEnv::default();
+    test_env.env.ledger().with_mut(|l| l.timestamp = 1_000_000);
+    let (id, _, _) = fixtures::create_subscription_detailed(
+        &test_env.env,
+        &test_env.client,
+        SubscriptionStatus::Active,
+        AMOUNT,
+        INTERVAL,
+    );
+    // Expired via a wall-clock bound already reached.
+    force_expired(&test_env.env, &test_env.client, id, Some(1_000_000), None);
+    assert_eq!(
+        test_env.client.get_subscription(&id).status,
+        SubscriptionStatus::Expired
+    );
+
+    let now = test_env.env.ledger().timestamp();
+    test_env.client.reactivate_subscription(&test_env.admin, &id);
+
+    let sub = test_env.client.get_subscription(&id);
+    assert_eq!(sub.status, SubscriptionStatus::Active);
+    assert_eq!(sub.expires_at, Some(now.saturating_add(INTERVAL)));
+    assert_eq!(sub.expires_at_ledger, None);
+}
+
+#[test]
+fn test_reactivate_expired_preserves_far_future_expiration() {
+    let test_env = TestEnv::default();
+    test_env.env.ledger().with_mut(|l| l.timestamp = 1_000_000);
+    let (id, _, _) = fixtures::create_subscription_detailed(
+        &test_env.env,
+        &test_env.client,
+        SubscriptionStatus::Active,
+        AMOUNT,
+        INTERVAL,
+    );
+    let far = 1_000_000u64.saturating_add(INTERVAL.saturating_mul(10));
+    force_expired(&test_env.env, &test_env.client, id, Some(far), None);
+
+    test_env.client.reactivate_subscription(&test_env.admin, &id);
+
+    let sub = test_env.client.get_subscription(&id);
+    assert_eq!(sub.status, SubscriptionStatus::Active);
+    // Already >= one interval out, so it must be left unchanged.
+    assert_eq!(sub.expires_at, Some(far));
+    assert_eq!(sub.expires_at_ledger, None);
+}
+
+#[test]
+fn test_reactivate_expired_clears_stale_ledger_bound() {
+    let test_env = TestEnv::default();
+    test_env.env.ledger().with_mut(|l| l.timestamp = 1_000_000);
+    let (id, _, _) = fixtures::create_subscription_detailed(
+        &test_env.env,
+        &test_env.client,
+        SubscriptionStatus::Active,
+        AMOUNT,
+        INTERVAL,
+    );
+    // Expired via a ledger-sequence bound (no wall-clock bound set).
+    force_expired(&test_env.env, &test_env.client, id, None, Some(1));
+    assert_eq!(
+        test_env.client.get_subscription(&id).status,
+        SubscriptionStatus::Expired
+    );
+
+    let now = test_env.env.ledger().timestamp();
+    test_env.client.reactivate_subscription(&test_env.admin, &id);
+
+    let sub = test_env.client.get_subscription(&id);
+    assert_eq!(sub.status, SubscriptionStatus::Active);
+    assert_eq!(sub.expires_at, Some(now.saturating_add(INTERVAL)));
+    // Stale ledger bound is cleared so it cannot re-expire the reactivation.
+    assert_eq!(sub.expires_at_ledger, None);
+}
+
+#[test]
+#[should_panic(expected = "Error(Contract, #1002)")]
+fn test_reactivate_non_admin_forbidden() {
+    let test_env = TestEnv::default();
+    let (id, _, _) = fixtures::create_subscription_detailed(
+        &test_env.env,
+        &test_env.client,
+        SubscriptionStatus::Active,
+        AMOUNT,
+        INTERVAL,
+    );
+    force_expired(&test_env.env, &test_env.client, id, Some(0), None);
+    let not_admin = Address::generate(&test_env.env);
+    test_env.client.reactivate_subscription(&not_admin, &id);
+}
+
+#[test]
+#[should_panic(expected = "Error(Contract, #4001)")]
+fn test_reactivate_non_expired_rejected() {
+    let test_env = TestEnv::default();
+    let (id, subscriber, _) = fixtures::create_subscription_detailed(
+        &test_env.env,
+        &test_env.client,
+        SubscriptionStatus::Active,
+        AMOUNT,
+        INTERVAL,
+    );
+    test_env.client.pause_subscription(&id, &subscriber);
+    // Paused is not a reactivatable state.
+    test_env.client.reactivate_subscription(&test_env.admin, &id);
+}
+
+#[test]
+fn test_reactivate_active_is_idempotent() {
+    let test_env = TestEnv::default();
+    let (id, _, _) = fixtures::create_subscription_detailed(
+        &test_env.env,
+        &test_env.client,
+        SubscriptionStatus::Active,
+        AMOUNT,
+        INTERVAL,
+    );
+    // Already active: no-op, no expiration mutation.
+    test_env.client.reactivate_subscription(&test_env.admin, &id);
+    let sub = test_env.client.get_subscription(&id);
+    assert_eq!(sub.status, SubscriptionStatus::Active);
+    assert_eq!(sub.expires_at, None);
+    assert_eq!(sub.expires_at_ledger, None);
 }
 
 #[test]
@@ -10718,6 +10882,7 @@ fn test_exhaustive_valid_transitions_matrix() {
         (SubscriptionStatus::GracePeriod, SubscriptionStatus::InsufficientBalance),
         (SubscriptionStatus::GracePeriod, SubscriptionStatus::Expired),
         // From Expired
+        (SubscriptionStatus::Expired, SubscriptionStatus::Active),
         (SubscriptionStatus::Expired, SubscriptionStatus::Archived),
         // From Archived - no outgoing transitions (terminal)
     ];

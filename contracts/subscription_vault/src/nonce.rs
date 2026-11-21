@@ -36,7 +36,7 @@ pub enum NonceDomain {
     BatchCharge = 0,
     AdminRotation = 1,
     OperatorBatchCharge = 2,
-    MetadataSigned = 3,
+    MetadataSigned = 11,
     MerchantRotation = 4,
     ChargeInterval = 5,
     DepositFunds = 6,
@@ -60,7 +60,7 @@ impl TryFrom<u32> for NonceDomain {
             0 => Ok(NonceDomain::BatchCharge),
             1 => Ok(NonceDomain::AdminRotation),
             2 => Ok(NonceDomain::OperatorBatchCharge),
-            3 => Ok(NonceDomain::MetadataSigned),
+            11 => Ok(NonceDomain::MetadataSigned),
             4 => Ok(NonceDomain::MerchantRotation),
             5 => Ok(NonceDomain::ChargeInterval),
             6 => Ok(NonceDomain::DepositFunds),
@@ -232,7 +232,7 @@ mod tests {
         assert_eq!(DOMAIN_BATCH_CHARGE.as_u32(), 0);
         assert_eq!(DOMAIN_ADMIN_ROTATION.as_u32(), 1);
         assert_eq!(DOMAIN_OPERATOR_BATCH_CHARGE.as_u32(), 2);
-        assert_eq!(DOMAIN_METADATA_SIGNED.as_u32(), 3);
+        assert_eq!(DOMAIN_METADATA_SIGNED.as_u32(), 11);
         assert_eq!(DOMAIN_MERCHANT_ROTATION.as_u32(), 4);
         assert_eq!(DOMAIN_CHARGE_INTERVAL.as_u32(), 5);
         assert_eq!(DOMAIN_DEPOSIT_FUNDS.as_u32(), 6);

@@ -74,6 +74,20 @@ fn charge_fail(
     attempted_amount: i128,
     ledger: u64,
 ) -> Error {
+    if err == Error::IdemBufferFull {
+        env.events().publish(
+            (Symbol::new(env, "idem_buffer_exhausted"), subscription_id),
+            crate::types::IdemBufferExhaustedEvent {
+                subscription_id,
+                attempted_amount,
+                ledger,
+                schema_version: crate::types::BASE_EVENT_SCHEMA_VERSION,
+                batch_nonce: crate::admin::current_batch_nonce(env),
+                contract_id: env.current_contract_address(),
+            },
+        );
+    }
+
     env.events().publish(
         (Symbol::new(env, "charge_failed_v2"), subscription_id),
         ChargeFailureEvent {

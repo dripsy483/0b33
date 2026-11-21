@@ -99,6 +99,21 @@ fn test_create_subscription_with_split_validation() {
         &bad_entries3,
     );
     assert_eq!(res3, Err(Ok(Error::InvalidInput)));
+
+    let mut duplicate_entries = Vec::new(&env);
+    duplicate_entries.push_back((payee1.clone(), 5_000u32));
+    duplicate_entries.push_back((payee1.clone(), 5_000u32));
+    let duplicate_res = client.try_create_subscription_with_split(
+        &subscriber,
+        &merchant,
+        &100i128,
+        &3600u64,
+        &false,
+        &None::<i128>,
+        &None::<u64>,
+        &duplicate_entries,
+    );
+    assert_eq!(duplicate_res, Err(Ok(Error::DuplicateSplitPayee)));
 }
 
 #[test]

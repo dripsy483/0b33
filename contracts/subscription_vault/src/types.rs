@@ -132,6 +132,13 @@ pub const IDEM_HISTORY: u32 = 64;
 /// Maximum fee in basis points (100.00%).
 pub const MAX_FEE_BIPS: i32 = 10000;
 
+/// Maximum voting weight that can be assigned to a single guardian.
+///
+/// Prevents a backdoor guardian from being granted `u32::MAX` weight and
+/// unilaterally satisfying any quorum threshold on their own. The cap keeps
+/// every guardian's influence bounded relative to the rest of the guardian set.
+pub const MAX_GUARDIAN_WEIGHT: u32 = 10_000;
+
 /// Oracle price sanity band: minimum allowed price in basis points relative to reference.
 /// A price below this threshold is considered invalid.
 pub const ORACLE_PRICE_MIN_BPS: u32 = 100; // 1% of reference
@@ -407,7 +414,7 @@ pub enum DataKey {
     /// under a given merchant. Used by `list_credit_limits`. Discriminant 86.
     MerchantCreditLimits(Address),
     /// Global requirement that merchants have active KYC before receiving charges.
-    /// Discriminant 87.
+    /// Discriminant 90.
     KycRequired,
 }
 
@@ -470,43 +477,42 @@ impl DataKey {
             DataKey::SubscriptionDispute(_) => 52,
             DataKey::PayoutSchedule(_) => 53,
             DataKey::PendingTreasuryChange => 54,
-            DataKey::TransferIntent(_) => 54,
-            DataKey::Kyc(_) => 55,
-            DataKey::Coupon(_) => 56,
-            DataKey::CouponRedemptions(_) => 57,
-            DataKey::Credential(_) => 58,
-            DataKey::SplitPayees(_) => 59,
-            DataKey::BuyoutPremiumBps => 60,
-            DataKey::MerchantVacation(_) => 62,
-            DataKey::AdminConfigLastChangedAt(_) => 59,
-            DataKey::SubscriberCreateCap => 60,
-            DataKey::SubscriberCreateWindow(_) => 61,
-            DataKey::MerchantWhitelistMode => 62,
-            DataKey::MerchantApproved(_) => 63,
-            DataKey::ChargeSalt(_) => 64,
-            DataKey::ChargeFailureCounter(_) => 65,
-            DataKey::AutoPauseThreshold => 66,
-            DataKey::BuyoutPremiumBps => 67,
-            DataKey::SubCoupon(_) => 68,
-            DataKey::SubCouponRedeemed(_, _) => 69,
-            DataKey::MerchantMultiSig(_) => 70,
-            DataKey::SubscriberActiveCount(_) => 71,
-            DataKey::SubscriberActiveCapOverride(_) => 72,
-            DataKey::TagAllowlist => 73,
-            DataKey::MerchantTags(_) => 74,
-            DataKey::FeeToken => 75,
-            DataKey::CancellationEscrow(_) => 76,
-            DataKey::MerchantFeeBps(_) => 77,
-            DataKey::OraclePriceHistoryMeta(_) => 78,
-            DataKey::OraclePriceHistoryEntry(_, _) => 79,
-            DataKey::DelegatedPayerGrant(_, _) => 80,
-            DataKey::EmergencyWithdrawIntent(_) => 81,
-            DataKey::MerchantSubAccount(_, _) => 82,
-            DataKey::MerchantSubAccountList(_) => 83,
-            DataKey::DisputeWindowSecs => 84,
-            DataKey::IdempotencyTtlSecs => 85,
-            DataKey::MerchantCreditLimits(_) => 86,
-            DataKey::KycRequired => 87,
+            DataKey::TransferIntent(_) => 55,
+            DataKey::Kyc(_) => 56,
+            DataKey::Coupon(_) => 57,
+            DataKey::CouponRedemptions(_) => 58,
+            DataKey::Credential(_) => 59,
+            DataKey::AdminConfigLastChangedAt(_) => 60,
+            DataKey::SubscriberCreateCap => 61,
+            DataKey::SubscriberCreateWindow(_) => 62,
+            DataKey::MerchantWhitelistMode => 63,
+            DataKey::MerchantApproved(_) => 64,
+            DataKey::ChargeSalt(_) => 65,
+            DataKey::ChargeFailureCounter(_) => 66,
+            DataKey::AutoPauseThreshold => 67,
+            DataKey::BuyoutPremiumBps => 68,
+            DataKey::MerchantVacation(_) => 69,
+            DataKey::SubCoupon(_) => 70,
+            DataKey::SubCouponRedeemed(_, _) => 71,
+            DataKey::MerchantMultiSig(_) => 72,
+            DataKey::SubscriberActiveCount(_) => 73,
+            DataKey::SubscriberActiveCapOverride(_) => 74,
+            DataKey::TagAllowlist => 75,
+            DataKey::MerchantTags(_) => 76,
+            DataKey::FeeToken => 77,
+            DataKey::CancellationEscrow(_) => 78,
+            DataKey::MerchantFeeBps(_) => 79,
+            DataKey::OraclePriceHistoryMeta(_) => 80,
+            DataKey::OraclePriceHistoryEntry(_, _) => 81,
+            DataKey::DelegatedPayerGrant(_, _) => 82,
+            DataKey::SplitPayees(_) => 83,
+            DataKey::EmergencyWithdrawIntent(_) => 84,
+            DataKey::MerchantSubAccount(_, _) => 85,
+            DataKey::MerchantSubAccountList(_) => 86,
+            DataKey::DisputeWindowSecs => 87,
+            DataKey::IdempotencyTtlSecs => 88,
+            DataKey::MerchantCreditLimits(_) => 89,
+            DataKey::KycRequired => 90,
         }
     }
 
@@ -580,11 +586,12 @@ pub const KNOWN_INSTANCE_KEY_DISCRIMINANTS: &[u32] = &[
     77, // MerchantFeeBps(Address)
     78, // OraclePriceHistoryMeta(Address)
     79, // OraclePriceHistoryEntry(Address, u32)
-    82, // MerchantSubAccount(Address, Symbol)
-    83, // MerchantSubAccountList(Address)
-    84, // DisputeWindowSecs
-    86, // MerchantCreditLimits(Address)
-    87, // KycRequired
+    85, // MerchantSubAccount(Address, Symbol)
+    86, // MerchantSubAccountList(Address)
+    87, // DisputeWindowSecs
+    88, // IdempotencyTtlSecs
+    89, // MerchantCreditLimits(Address)
+    90, // KycRequired
 ];
 
 /// Returns `true` if `discriminant` is a recognised instance-storage key.
@@ -941,8 +948,8 @@ pub const MAX_DISPUTE_WINDOW_SECS: u64 = 90 * 24 * 60 * 60; // 90 days
 /// merchant may dispute the cancellation; once it elapses the subscriber claims
 /// the refund via `withdraw_subscriber_funds` or `claim_cancellation_escrow`.
 ///
-/// Value matches the 24-hour hold documented on the `claim_cancellation_escrow`
-/// entrypoint. A withdrawal attempted before `released_at` fails with
+/// The actual hold is the larger of this value and the configured dispute
+/// response window. A withdrawal attempted before `released_at` fails with
 /// [`Error::EscrowNotReleased`].
 ///
 /// Note this is the escrow window, not the dispute window: disputes opened
@@ -951,8 +958,9 @@ pub const CANCELLATION_ESCROW_WINDOW_SECS: u64 = 24 * 60 * 60; // 24 hours
 
 /// Escrow record created when a subscription is cancelled.
 ///
-/// The remaining prepaid balance is held in escrow for
-/// [`CANCELLATION_ESCROW_WINDOW_SECS`] before the subscriber can claim it.
+/// The remaining prepaid balance is held in escrow for at least
+/// [`CANCELLATION_ESCROW_WINDOW_SECS`] and for the configured dispute window
+/// floor before the subscriber can claim it.
 /// The merchant can lodge a dispute during this window to convert the escrow
 /// into a live Dispute record.
 #[contracttype]
@@ -1499,6 +1507,8 @@ pub enum Error {
     CouponAlreadyApplied = 6016,
     /// Coupon token does not match the subscription's settlement token.
     CouponTokenMismatch = 6017,
+    /// Coupon percentage discount exceeds the 10000-basis-point maximum.
+    CouponDiscountTooHigh = 6020,
     /// Too many subscriptions were created by this subscriber within the
     /// current rate window.
     SubscriberRateLimited = 6018,
@@ -2648,6 +2658,19 @@ pub struct BatchSizeWarningEvent {
 pub struct ChargeFailureEvent {
     pub subscription_id: u32,
     pub error_code: u32,
+    pub attempted_amount: i128,
+    pub ledger: u64,
+    pub schema_version: u32,
+    pub batch_nonce: Option<u64>,
+    pub contract_id: Address,
+}
+
+/// Dedicated observability event emitted when a charge is rejected because
+/// the idempotency ring has no live slot available.
+#[contracttype]
+#[derive(Clone, Debug)]
+pub struct IdemBufferExhaustedEvent {
+    pub subscription_id: u32,
     pub attempted_amount: i128,
     pub ledger: u64,
     pub schema_version: u32,

@@ -6,7 +6,9 @@
 
 use crate::{
     types::Error,
-    validation::{reject_contract_self, reject_empty_string, reject_zero_interval},
+    validation::{
+        reject_contract_self, reject_empty_string, reject_null_bytes, reject_zero_interval,
+    },
     SubscriptionVault,
 };
 use soroban_sdk::{Env, String};
@@ -64,6 +66,22 @@ fn test_reject_empty_string_accepts_long_string() {
     let long = "x".repeat(300);
     let s = String::from_str(&env, &long);
     assert_eq!(reject_empty_string(&s), Ok(()));
+}
+
+// ── reject_null_bytes ─────────────────────────────────────────────────────────
+
+#[test]
+fn test_reject_null_bytes_rejects_embedded_null_in_value() {
+    let env = Env::default();
+    let s = String::from_str(&env, "before\0after");
+    assert_eq!(reject_null_bytes(&s), Err(Error::InvalidInput));
+}
+
+#[test]
+fn test_reject_null_bytes_accepts_normal_string() {
+    let env = Env::default();
+    let s = String::from_str(&env, "metadata value");
+    assert_eq!(reject_null_bytes(&s), Ok(()));
 }
 
 // ── reject_contract_self ──────────────────────────────────────────────────────

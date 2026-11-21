@@ -107,6 +107,10 @@ REMEDIATION: dict[str, tuple[str, str, bool]] = {
     "EmergencyStopActive":            ("Pause writes; poll get_emergency_stop_status and retry after admin clears stop.", "EmergencyStopDisabledEvent", False),
     "AlreadyInitialized":             ("Do not retry; contract is already set up.", "—", False),
     "MerchantPaused":                 ("Retry only after merchant pause is removed (unpause_merchant).", "MerchantUnpausedEvent", False),
+    "KycRequired":                    ("Stop the charge and restore an active merchant KYC attestation before retrying.", "—", False),
+    "TimelockNotElapsed":             ("Wait until the treasury-change effective timestamp before retrying.", "—", False),
+    "VacationActive":                 ("Retry only after the merchant vacation window ends.", "VacationEndedEvent", False),
+    "EmergencyWithdrawInvalidState":  ("Refresh the subscription state; emergency withdrawal is only valid in an eligible state.", "—", False),
     "Reentrancy":                     ("Treat as a security failure; investigate calling path immediately.", "—", False),
     "NotInGracePeriod":               ("Refresh state; a grace-period buyout is only legal when status == GracePeriod.", "—", False),
     "PlanDeprecated":                 ("Migrate the subscription to a non-deprecated plan before charging again.", "ChargeFailureEvent", False),
@@ -144,6 +148,7 @@ REMEDIATION: dict[str, tuple[str, str, bool]] = {
     "UnknownMerchantTag":             ("Fix input; call get_tag_allowlist and use only listed tags.", "—", False),
     "DuplicateMerchantTag":           ("Remove the repeated tag from the request and retry.", "—", False),
     "MerchantTagLimitExceeded":       ("Reduce tags to at most MAX_MERCHANT_TAGS before retrying.", "—", False),
+    "DuplicateSplitPayee":            ("Remove duplicate addresses from the split-payee list and retry.", "—", False),
     # Token
     "InvalidTokenDecimals":           ("Fix token_decimals; must be in [1, 19].", "—", False),
     "InvalidToken":                   ("Provide an accepted token address from list_accepted_tokens.", "—", False),
@@ -186,7 +191,8 @@ REMEDIATION: dict[str, tuple[str, str, bool]] = {
     "ProposalAlreadyExists":          ("Cancel the active proposal with cancel_admin_proposal before proposing a different admin.", "AdminProposalCancelledEvent", False),
     "NoActiveProposal":               ("There is no active proposal to cancel; nothing to roll back.", "—", False),
     "ProposalCooldownActive":         ("Wait for the admin proposal cooldown to elapse before proposing again.", "—", False),
-        "ProposalInvalidated":            ("Submit a new proposal after the admin rotation; pre-rotation proposals cannot be reused.", "—", False),
+    "ProposalInvalidated":            ("Submit a new proposal after the admin rotation; pre-rotation proposals cannot be reused.", "—", False),
+    "GovernanceRequired":             ("Submit the operation as a governance proposal and obtain guardian approval.", "—", False),
     # Multi-sig (15000-15099)
     "MultiSigApprovalRequired":       ("This operation needs multi-sig approval; submit a proposal and gather the required signatures first.", "MultiSigProposalCreatedEvent", False),
     "MultiSigProposalNotFound":       ("No valid multi-sig proposal matches this operation; create one first.", "MultiSigProposalCreatedEvent", False),
@@ -200,6 +206,7 @@ REMEDIATION: dict[str, tuple[str, str, bool]] = {
     "CouponAlreadyExists":            ("Choose a different coupon code and retry.", "CouponCreatedEvent", False),
     "CouponAlreadyApplied":           ("Subscription already has a coupon bound; only one coupon per subscription.", "CouponAppliedEvent", False),
     "CouponTokenMismatch":            ("Use a coupon whose token matches the subscription's settlement token.", "—", False),
+    "CouponDiscountTooHigh":          ("Reduce the coupon percentage to at most 10000 basis points.", "—", False),
     # Subscription Transfer
     "TransferIntentNotFound":         ("Verify transfer initiation or expiry before retrying.", "—", False),
     "TransferIntentExpired":          ("Transfer intent has expired; initiate a new transfer.", "—", False),

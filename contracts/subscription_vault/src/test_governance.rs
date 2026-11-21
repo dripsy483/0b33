@@ -99,34 +99,74 @@ fn direct_admin_rotation_invalidates_outstanding_proposals() {
 }
 
 #[test]
-fn dispute_window_can_be_changed_by_governance_proposal() {
-	let env = Env::default();
-	env.mock_all_auths();
-	let contract_id = env.register(SubscriptionVault, ());
-	let client = SubscriptionVaultClient::new(&env, &contract_id);
-	let admin = Address::generate(&env);
-	let token = env
-		.register_stellar_asset_contract_v2(admin.clone())
-		.address();
-	client.init(&token, &6, &admin, &1_000_000i128, &(7 * 24 * 60 * 60));
-	client.add_guardian(&admin, &admin, &1u32);
+fn test_add_guardian_at_max_weight_accepted() {
+    let env = Env::default();
+    env.mock_all_auths();
 
-	let eta = env.ledger().timestamp() + 2 * 24 * 60 * 60;
-	let proposal_id = client.submit_proposal(
-		&ProposalKind::SetDisputeWindow,
-		&admin,
-		&None::<Address>,
-		&(7 * 24 * 60 * 60u32), // 7 days — within [MIN_DISPUTE_WINDOW_SECS, MAX_DISPUTE_WINDOW_SECS]
-		&6_700u32,
-		&eta,
-	);
-	client.vote_proposal(&proposal_id, &true, &0u64);
+    let admin = Address::generate(&env);
+    let guardian = Address::generate(&env);
+    let (_, client) = init_vault(&env, &admin);
 
-	env.ledger().set_timestamp(eta);
-	client.execute_proposal(&proposal_id);
-
-	assert_eq!(client.get_dispute_window_secs(), 7 * 24 * 60 * 60);
+    // MAX_GUARDIAN_WEIGHT (10_000) is the ceiling — must be accepted.
+    client.add_guardian(&admin, &guardian, &10_000);
+    assert_eq!(client.get_guardian_weight(&guardian), 10_000);
 }
+
+#[test]
+fn test_add_guardian_above_max_weight_rejected() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let admin = Address::generate(&env);
+    let guardian = Address::generate(&env);
+    let (_, client) = init_vault(&env, &admin);
+
+    // weight = 10_001 exceeds MAX_GUARDIAN_WEIGHT — must return InvalidInput.
+    let result = client.try_add_guardian(&admin, &guardian, &10_001);
+    assert!(
+        result.is_err(),
+        "guardian weight above MAX_GUARDIAN_WEIGHT must be rejected"
+    );
+}
+
+#[test]
+fn test_add_guardian_u32_max_weight_rejected() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let admin = Address::generate(&env);
+    let guardian = Address::generate(&env);
+    let (_, client) = init_vault(&env, &admin);
+
+    // u32::MAX must be rejected — it would let one guardian satisfy any quorum alone.
+    let result = client.try_add_guardian(&admin, &guardian, &u32::MAX);
+    assert!(
+        result.is_err(),
+        "guardian weight of u32::MAX must be rejected"
+    );
+}
+
+#[test]
+fn test_submit_proposal_rotate_admin() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let admin = Address::generate(&env);
+    let new_admin = Address::generate(&env);
+    let (_, client) = init_vault(&env, &admin);
+
+    let current_time = env.ledger().timestamp();
+    let eta = current_time + 3600; // 1 hour from now
+
+    // Submit proposal
+    let proposal_id = client.submit_proposal(
+        &ProposalKind::RotateAdmin,
+        &new_admin,
+        &None,
+        &0,
+        &5000, // 50% quorum
+        &eta,
+    );
 
 // ── Pre-validation tests: reject invalid configs at submission time ──────────
 

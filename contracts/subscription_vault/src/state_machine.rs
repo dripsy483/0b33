@@ -34,6 +34,7 @@ pub fn can_transition(from: &SubscriptionStatus, to: &SubscriptionStatus) -> boo
             | (GracePeriod, InsufficientBalance)
             | (GracePeriod, Expired)
             | (Cancelled, Archived)
+            | (Expired, Active)
             | (Expired, Archived)
     )
 }
@@ -75,7 +76,7 @@ pub fn get_allowed_transitions(from: &SubscriptionStatus) -> Vec<SubscriptionSta
         Cancelled => &[Archived],
         InsufficientBalance => &[Active, Paused, Cancelled, Expired],
         GracePeriod => &[Active, Cancelled, InsufficientBalance, Expired],
-        Expired => &[Archived],
+        Expired => &[Active, Archived],
         Archived => &[],
     };
     for t in targets {

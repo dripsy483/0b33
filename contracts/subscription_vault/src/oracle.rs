@@ -144,6 +144,21 @@ fn save_history_meta(env: &Env, token: &Address, meta: &OraclePriceHistoryMeta) 
     );
 }
 
+/// Read the timestamp of the most recently recorded sample for `token`.
+///
+/// Returns `None` when the ring buffer is empty (no prior entry to compare
+/// against).
+fn load_latest_timestamp(env: &Env, token: &Address) -> Option<u64> {
+    let meta = load_history_meta(env, token);
+    if meta.count == 0 {
+        return None;
+    }
+    let last_slot = (meta.head + ORACLE_PRICE_HISTORY_SIZE - 1) % ORACLE_PRICE_HISTORY_SIZE;
+    env.storage()
+        .instance()
+        .get::<DataKey, u64>(&DataKey::OraclePriceHistoryTimestamp(token.clone(), last_slot))
+}
+
 /// Read all samples currently in the ring buffer for `token` (in insertion order).
 fn load_prices(env: &Env, token: &Address) -> Vec<i128> {
     let meta = load_history_meta(env, token);
@@ -171,7 +186,18 @@ fn load_prices(env: &Env, token: &Address) -> Vec<i128> {
 }
 
 /// Append a new price sample to the ring buffer for `token`.
-fn record_price(env: &Env, token: &Address, price: i128) {
+///
+/// The entry is only accepted when its `timestamp` is strictly greater than
+/// the timestamp of the most recently recorded entry. Out-of-order (or
+/// duplicate-timestamp) entries are discarded so they never enter the ring
+/// buffer and therefore never contribute to the TWAP calculation.
+fn record_price(env: &Env, token: &Address, price: i128, timestamp: u64) {
+    if let Some(prev_ts) = load_latest_timestamp(env, token) {
+        if timestamp <= prev_ts {
+            // Out-of-order entry: discard rather than corrupt the TWAP.
+            return;
+        }
+    }
     let mut meta = load_history_meta(env, token);
     let slot = meta.head;
     meta.head = (meta.head + 1) % ORACLE_PRICE_HISTORY_SIZE;
@@ -180,6 +206,10 @@ fn record_price(env: &Env, token: &Address, price: i128) {
     env.storage().instance().set(
         &DataKey::OraclePriceHistoryEntry(token.clone(), slot),
         &price,
+    );
+    env.storage().instance().set(
+        &DataKey::OraclePriceHistoryTimestamp(token.clone(), slot),
+        &timestamp,
     );
 }
 
@@ -235,7 +265,7 @@ fn check_deviation_and_record(
         median_of_sorted(&sorted)
     } else {
         // Bootstrap: no history yet, always accept
-        record_price(env, token, new_price);
+        record_price(env, token, new_price, env.ledger().timestamp());
         return Ok(());
     };
 
@@ -244,99 +274,4 @@ fn check_deviation_and_record(
     } else {
         median - new_price
     };
-    // deviation_bps = (diff * 10_000) / median
-    let numerator = safe_mul(diff, 10_000i128)?;
-    let deviation = safe_div(numerator, median)?;
-
-    if (threshold == 0 && new_price != median) || deviation > threshold as i128 {
-        let now = env.ledger().timestamp();
-        env.events().publish(
-            (Symbol::new(env, "oracle_deviation_breaker"),),
-            OracleDeviationBreakerEvent {
-                token: token.clone(),
-                latest_price: new_price,
-                median_price: median,
-                deviation_bps: deviation as u64,
-                threshold_bps: threshold,
-                timestamp: now,
-            },
-        );
-        return Err(Error::OracleDeviationTooHigh);
-    }
-
-    record_price(env, token, new_price);
-    Ok(())
-}
-
-// Split out to avoid redundant code in the early-return path.
-fn record_and_ok(env: &Env, token: &Address, price: i128) -> Result<(), Error> {
-    record_price(env, token, price);
-    Ok(())
-}
-
-// ── Charge resolution ──────────────────────────────────────────────────────────
-
-/// Resolve token-denominated charge amount.
-///
-/// With oracle disabled, returns `subscription.amount` as-is.
-/// With oracle enabled, interprets `subscription.amount` as quote units and converts
-/// to token base units using oracle quote:
-///
-/// token_amount = ceil(quote_amount * 10^token_decimals / quote_per_token)
-pub fn resolve_charge_amount(env: &Env, subscription: &Subscription) -> Result<i128, Error> {
-    #[cfg(not(feature = "oracle-pricing"))]
-    {
-        let _ = env;
-        return Ok(subscription.amount);
-    }
-    #[cfg(feature = "oracle-pricing")]
-    {
-        let cfg = get_oracle_config(env);
-        if !cfg.enabled {
-            return Ok(subscription.amount);
-        }
-
-        let oracle = cfg.oracle.ok_or(Error::OracleNotConfigured)?;
-        let price: OraclePrice =
-            env.invoke_contract(&oracle, &Symbol::new(env, "latest_price"), Vec::new(env));
-
-        if price.price <= 0 {
-            return Err(Error::OraclePriceInvalid);
-        }
-        if price.timestamp == 0 {
-            return Err(Error::OraclePriceUnavailable);
-        }
-        if cfg.max_age_seconds > 0 {
-            let now = env.ledger().timestamp();
-            if now.saturating_sub(price.timestamp) > cfg.max_age_seconds {
-                return Err(Error::OraclePriceStale);
-            }
-        }
-
-        // Deviation circuit breaker — checked before the price is consumed.
-        check_deviation_and_record(env, &subscription.token, price.price)?;
-
-        let token_decimals =
-            crate::admin::get_token_decimals(env, &subscription.token).unwrap_or(6);
-
-        let scale = safe_pow(10i128, token_decimals)?;
-        let numerator = safe_mul(subscription.amount, scale)?;
-        let ceil_adjust = safe_sub(price.price, 1)?;
-        let token_amount = safe_div(safe_add(numerator, ceil_adjust)?, price.price)?;
-
-        // The resolved charge came out to zero (or negative). This is a fault
-        // in the *amount*, not in the price: `subscription.amount` was 0, so the
-        // ceiling division truncated to 0. Report `InvalidAmount` rather than
-        // `OraclePriceInvalid` — the price already passed every validity check
-        // above, and reporting a price error here would send operators hunting
-        // for an oracle fault that does not exist.
-        //
-        // Note the asymmetry with `price == 1`: that value is *valid* and
-        // yields the largest possible charge (`amount * 10^decimals`), not a
-        // zero one. See docs/oracle_pricing.md -> "Degenerate prices".
-        if token_amount <= 0 {
-            return Err(Error::InvalidAmount);
-        }
-        Ok(token_amount)
-    }
-}
+    // deviation_bps = (diff * 10_000) / 

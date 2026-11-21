@@ -17,7 +17,7 @@ use crate::{
     charge_core::{charge_one, charge_usage_one},
     ChargeExecutionResult,
 };
-use soroban_sdk::{token, Address, Bytes, Env, String, Symbol, Vec};
+use soroban_sdk::{token, Address, Bytes, Env, Map, String, Symbol, Vec};
 
 pub fn get_schema_version(env: &Env) -> u32 {
     if let Some(v) = env
@@ -637,8 +637,13 @@ pub(crate) fn read_cached_admin_config(env: &Env) -> Result<CachedAdminConfig, E
 /// Execute the core batch-charge loop without auth or nonce advancement.
 ///
 /// Called by both `do_batch_charge` (admin path) and
-/// `operator::do_operator_batch_charge` (operator path) after authorization and
-/// nonce validation have been satisfied.
+/// `operator::do_operator_batch_charge` (operator path) after their respective
+/// auth/nonce guards have been satisfied.
+///
+/// Duplicate IDs within the same batch are rejected: the first occurrence is
+/// processed normally; any subsequent occurrence of the same ID produces a
+/// `BatchChargeResult { success: false, error_code: Error::Replay }` without
+/// touching contract state.
 pub(crate) fn execute_batch_charge(
     env: &Env,
     subscription_ids: &Vec<u32>,
@@ -647,14 +652,24 @@ pub(crate) fn execute_batch_charge(
     let now = env.ledger().timestamp();
     // Read all admin config values once so they are cached across the batch loop.
     let cached_admin = read_cached_admin_config(env);
-    // Cache per-merchant paused/vacation status across the batch loop so
-    // subscriptions sharing a merchant only hit storage once for it.
-    let mut merchant_cache: soroban_sdk::Map<Address, (bool, bool)> = soroban_sdk::Map::new(env);
+    // Track IDs seen in this batch to reject duplicates before they hit storage.
+    let mut seen: Map<u32, bool> = Map::new(env);
     let mut results = Vec::new(env);
-    // Cache oracle prices per (merchant, token) pair so subscriptions sharing a
-    // merchant and token within the batch don't redundantly re-query the oracle.
-    let mut price_cache: std::vec::Vec<(Address, Address, u128)> = std::vec::Vec::new();
-    for (idx, id) in subscription_ids.iter().enumerate() {
+    for id in subscription_ids.iter() {
+        // Reject duplicate IDs within the same batch.  Without this guard a
+        // caller could list the same subscription twice and charge it twice
+        // inside a single transaction, bypassing the interval check because
+        // the second charge reads the already-updated ChargedPeriod written
+        // by the first charge in the same transaction context.
+        if seen.contains_key(id) {
+            results.push_back(BatchChargeResult {
+                success: false,
+                error_code: Error::Replay.to_code(),
+            });
+            continue;
+        }
+        seen.set(id, true);
+
         let admin_ref = match &cached_admin {
             Ok(cfg) => Some(cfg),
             Err(_) => None,
@@ -873,6 +888,9 @@ pub fn do_rotate_admin(
     // Atomic swap: write new admin before emitting the event so any indexer
     // that reads state on the event sees the already-updated value.
     write_config(env, &DataKey::Admin, &new_admin);
+    env.storage()
+        .persistent()
+        .remove(&DataKey::PendingTreasuryChange);
     crate::governance::invalidate_pending_proposals(env);
 
     // Mark the multi-sig proposal as consumed
@@ -1245,6 +1263,9 @@ pub fn do_claim_admin_role(env: &Env, claimant: Address) -> Result<(), Error> {
 
     storage.remove(&proposal_key(env));
     write_config(env, &DataKey::Admin, &claimant);
+    env.storage()
+        .persistent()
+        .remove(&DataKey::PendingTreasuryChange);
     crate::governance::invalidate_pending_proposals(env);
 
     env.events().publish(

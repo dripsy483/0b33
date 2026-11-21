@@ -139,6 +139,30 @@ fn test_rotate_admin_blocked_during_emergency_stop() {
     assert_eq!(client.get_admin(), admin);
 }
 
+#[test]
+fn test_rotate_admin_invalidates_pending_treasury_change() {
+    let (env, client, _token, admin) = setup();
+    let new_admin = Address::generate(&env);
+    let treasury = Address::generate(&env);
+
+    client.queue_treasury_change(&admin, &treasury, &100u32);
+    env.as_contract(&client.address, || {
+        assert!(env
+            .storage()
+            .persistent()
+            .has(&crate::types::DataKey::PendingTreasuryChange));
+    });
+
+    client.rotate_admin(&admin, &new_admin, &0u64);
+
+    env.as_contract(&client.address, || {
+        assert!(!env
+            .storage()
+            .persistent()
+            .has(&crate::types::DataKey::PendingTreasuryChange));
+    });
+}
+
 // ── claim_admin_role ─────────────────────────────────────────────────────────
 
 #[test]

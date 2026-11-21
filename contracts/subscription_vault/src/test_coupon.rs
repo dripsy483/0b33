@@ -42,6 +42,28 @@ fn test_create_coupon_valid() {
 }
 
 #[test]
+fn test_create_coupon_rejects_discount_above_maximum() {
+    let (env, client, _admin, token) = setup();
+    let merchant = Address::generate(&env);
+    let code = Symbol::new(&env, "BADDISC");
+
+    let res = client.mock_all_auths().try_create_coupon(
+        &merchant,
+        &code,
+        &token,
+        &20_000,
+        &500,
+        &100,
+        &0,
+    );
+
+    assert_eq!(
+        res.err().unwrap().unwrap().to_code(),
+        Error::CouponDiscountTooHigh.to_code()
+    );
+}
+
+#[test]
 fn test_create_coupon_duplicate_rejected() {
     let (env, client, _admin, token) = setup();
     let merchant = Address::generate(&env);
